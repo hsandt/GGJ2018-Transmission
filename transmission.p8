@@ -22,21 +22,29 @@ toggable_flag_id = 1
 collision_flag_id = 2
 
 -- sprite big id
-
+restart_big_id = 1
+exit_big_id = 2
 emitter_big_id = 8
 receiver_big_id = 9
 forwarder_up_big_id = 4
+
 -- a sprite just below another in the big spritesheet is its toggable variant (if applicable)
 toggable_offset = 8
 
 -- constants
 fixed_delta_time = 1/30
 
--- parameters
+-- ui parameters
 topbar_height = 16
+goal_letters_start_x = 10
+received_letters_start_x = 51
+restart_icon_x = 6*16
+exit_icon_x = 7*16
 bottombar_height = 16
 level_width = 8
 level_height = 6
+
+-- gameplay parameters
 moving_letter_initial_speed = 50.0  -- original 20.0
 
 -- colors
@@ -61,10 +69,13 @@ peach = 15
 untoggable_color = orange
 toggable_color = green
 gamespace_bgcolor = white
+active_color = green
+inactive_color = dark_gray
 
 -- ui
 topbar_bgcolor = indigo
 remaining_letter_color = indigo
+goal_letter_color = green
 received_letter_color = black
 moving_letter_color = red
 bottombar_bgcolor = black
@@ -94,17 +105,16 @@ directions_vector = {
 }
 
 effector_types = {
- forwarder = 1
+ forwarder = "forwarder"
 }
 
 
 -- data
 
 level_data = {
- start_letters = {"b", "a"},
- -- goal_letters = {"a", "b"}
- goal_letters = {"b", "a"},
- bottom_message = "press ❎ to emit letters"
+ start_letters = {"b", "g", "i"},
+ goal_letters = {"b", "i", "g"},
+ bottom_message = "press ❎ to emit letters\nclick to toggle green items"
 }
 
 
@@ -176,6 +186,9 @@ function yield_delay(time)
   yield()
  end
 end
+
+
+-- conversion helpers
 
 -- convert 16x16 spritesheet coordinates to 8x8 sprite id
 -- [non-surjective]
@@ -255,6 +268,22 @@ function screen_position_to_gamespace_location(screen_position)
 end
 
 
+-- string helpers
+
+function join(sequence, separator)
+ local final_string = ""
+ local i = 0  -- increment at beginning of loop, so start at 1
+ for v in all(sequence) do  -- use all to guarantee order
+  i += 1
+  final_string = final_string..tostr(v)
+  if separator and i < #sequence then
+   final_string = final_string..separator
+  end
+ end
+ return final_string
+end
+
+
 -- input helpers
 
 mouse_devkit_address = 0x5f2d
@@ -323,20 +352,33 @@ function bigspr(big_sprite_id, x, y, flip_x, flip_y)
 end
 
 -- draw "big" sprite 16x16 of big sprite id at location (i,j), optionally flipped in x/y
-function bigtile(big_sprite_id, location, flip_x, flip_y)
-local sprite_id = big_sprite_id_to_sprite_id(big_sprite_id)
-local position = location_to_position(location)
+function bigtile(big_sprite_id, location, active, flip_x, flip_y)
+ -- default (nil is not false!!)
+ if active == nil then
+  active = true
+ end
+
+ local sprite_id = big_sprite_id_to_sprite_id(big_sprite_id)
+ local position = location_to_position(location)
+
+ if not active then
+  -- inactive objects switch palette to inactive
+  pal(active_color, inactive_color)
+ end
+
  spr(sprite_id, position.x, position.y, 2, 2, flip_x, flip_y)
+
+ if not active then
+  pal()
+ end
 end
 
 
 -- factory
 
 function make_toggable(big_sprite_id)
- printh("make_toggable: "..big_sprite_id)
  local effector_type = nil
  local direction = nil
- printh("forwarder_up_big_id+toggable_offset: "..forwarder_up_big_id+toggable_offset)
  if big_sprite_id >= forwarder_up_big_id+toggable_offset and big_sprite_id < forwarder_up_big_id+toggable_offset+4 then
   effector_type = effector_types.forwarder
   direction = directions_sequence[big_sprite_id-(forwarder_up_big_id+toggable_offset)+1]  -- sequence starts at 1
@@ -420,17 +462,6 @@ function process_input()
    button_state.released = true
   end
  end
-
- if is_down("mouse_primary") then
-  printh("primary")
- end
- if is_pressed("mouse_primary") then
-  printh("pressed primary")
- end
- if is_released("mouse_primary") then
-  printh("released primary")
- end
-
 end
 
 function handle_input()
@@ -442,13 +473,26 @@ function handle_input()
 
   -- toggle
   if is_pressed("mouse_primary") then
-   local location = screen_position_to_gamespace_location(get_mouse_screen_position())
-   local toggable_actor = toggable_actors_linear_map[location]
-   if toggable_actor then
-    toggle(toggable_actor)
-   end
-  end
- end
+   local click_position = get_mouse_screen_position()
+   if click_position.y < topbar_height then
+    -- click on topbar
+    if click_position.x >= restart_icon_x and click_position.x < restart_icon_x+16 then
+     reload_current_level()
+    elseif click_position.x >= exit_icon_x then
+     printh("exit (not implemented)")
+    end
+   elseif click_position.y >= topbar_height+16*level_height then
+    -- click on bottombar
+     printh("click on bottombar (does nothing)")
+   else
+    local location = screen_position_to_gamespace_location(click_position)
+    local toggable_actor = get_toggable_actor_at_location(location)
+    if toggable_actor then
+     toggle(toggable_actor)
+    end
+   end -- click in different areas
+  end -- primary
+ end -- playing
 end
 
 
@@ -466,6 +510,7 @@ function setup_level(index)
  current_gamestate = "playing"
 
  -- copy start letters sequence
+ clear_table(remaining_letters_to_emit)
  for letter in all(level_data.start_letters) do
   add(remaining_letters_to_emit, letter)
  end
@@ -486,13 +531,32 @@ end
 function succeed_current_level()
  current_gamestate = "succeeded"
  bottom_message = "success!"
- load_level_coroutine = cocreate(load_next_level_async)
- add(coroutines, load_level_coroutine)
+ load_next_level_after_delay()
 end
 
 function fail_current_level()
  current_gamestate = "failed"
  bottom_message = "failed!"
+ reload_current_level_after_delay()
+end
+
+function load_next_level_after_delay()
+ load_level_coroutine = cocreate(load_next_level_async)
+ add(coroutines, load_level_coroutine)
+end
+
+function reload_current_level_after_delay()
+ reload_level_coroutine = cocreate(reload_current_level_async)
+ add(coroutines, reload_level_coroutine)
+end
+
+function reload_current_level()
+ setup_level(current_level)
+end
+
+function reload_current_level_async()
+ yield_delay(2.0)
+ setup_level(current_level)
 end
 
 function load_next_level_async()
@@ -506,7 +570,10 @@ end
 
 -- return the location of dynamic tiles (also the emitter for letter display)
 function register_dynamic_tiles()
- local emitter_location = nil
+ -- reset any previous data to make sure they don't stack when loading a new level
+ level_data_cache.emitter_location = nil
+ clear_table(toggable_actors_linear_map)
+
  for i=0,level_width-1 do
   for j=0,level_height-1 do
    local sprite_id = mget(2*i,2*j)  -- map uses precise location, hence double
@@ -525,6 +592,10 @@ end
 function is_toggable(big_sprite_id)
  local sprite_id = big_sprite_id_to_sprite_id(big_sprite_id)
  return fget(sprite_id, toggable_flag_id)
+end
+
+function get_toggable_actor_at_location(location)
+ return toggable_actors_linear_map[location_to_map_linear_index(location)]
 end
 
 -- start and register coroutine to emit letters at regular intervals from now on
@@ -574,6 +645,7 @@ end
 
 -- toggle a toggable actor
 function toggle(toggable_actor)
+ printh("toggle "..toggable_actor.effector_type)
  toggable_actor.active = not toggable_actor.active
 end
 
@@ -671,7 +743,7 @@ function check_if_forwarder(big_sprite_id, toggable_flag, location, out_info)
   end
  else
   -- check for toggable forwarder
-  local toggable_actor = toggable_actors_linear_map[location_to_map_linear_index(location)]
+  local toggable_actor = get_toggable_actor_at_location(location)
   assert(toggable_actor)
   if toggable_actor.effector_type == effector_types.forwarder and toggable_actor.active then
    out_info.direction = toggable_actor.direction
@@ -710,9 +782,8 @@ end
 
 function draw_toggable_actors()
  for linear_index,toggable_actor in pairs(toggable_actors_linear_map) do
-  printh("linear_index: "..linear_index)
   local location = map_linear_index_to_location(linear_index)
-  bigtile(toggable_actor.big_sprite_id, location)
+  bigtile(toggable_actor.big_sprite_id,location,toggable_actor.active)
  end
 end
 
@@ -744,18 +815,21 @@ function draw_topbar()
  -- background
  rectfill(0,0,127,topbar_height-1,topbar_bgcolor)
 
+ draw_goal_letters()
  draw_received_letters()
 
  -- restart
- bigspr(1,6*16,0)
+ bigspr(restart_big_id,restart_icon_x,0)
  -- exit
- bigspr(2,7*16,0)
+ bigspr(exit_big_id,exit_icon_x,0)
+end
+
+function draw_goal_letters()
+ print("goal:"..join(level_data.goal_letters),goal_letters_start_x,4,goal_letter_color)
 end
 
 function draw_received_letters()
- for i,received_letter in pairs(received_letters) do
-  print(received_letter,51+4*i,4,received_letter_color)
- end
+ print(join(received_letters),received_letters_start_x,4,goal_letter_color)
 end
 
 function draw_bottombar()
