@@ -2,6 +2,13 @@ pico-8 cartridge // http://www.pico-8.com
 version 15
 __lua__
 
+-- Title: Reordered
+-- Version: 0.1
+-- GitHub page: https://github.com/hsandt/GGJ2018-Transmission
+-- Copyright: Long Nguyen Huu
+-- See LICENSE for license details
+
+
 -- terminology
 
 -- position: (x,y) float position
