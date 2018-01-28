@@ -111,16 +111,27 @@ effector_types = {
 
 -- data
 
-level_data = {
- start_letters = {"b", "g", "i"},
- goal_letters = {"b", "i", "g"},
- bottom_message = "press ❎ to emit letters\nclick to toggle green items"
+levels_data = {
+ {
+  id = 1,
+  start_letters = {"b", "g", "i"},
+  goal_letters = {"b", "i", "g"},
+  map_index = 0,
+  bottom_message = "press ❎ to emit letters\nclick to toggle green items"
+ },
+ {
+  id = 2,
+  start_letters = {"a", "w", "e", "v"},
+  goal_letters = {"w", "a", "v", "e"},
+  map_index = 0,
+  bottom_message = "press ❎ to emit letters\nclick to toggle green items"
+ }
 }
 
 
 -- data cache
 
-level_data_cache = {
+current_level_data_cache = {
  emitter_location = nil
 }
 
@@ -147,8 +158,14 @@ coroutines = {}
 -- index of the curent level
 current_level = 0
 
--- game state (playing, failed, succeeded)
-current_gamestate = "playing"
+-- reference to the current level data in levels data
+current_level_data = nil
+
+-- game state (start, playing, failed, succeeded)
+current_gamestate = "start"
+
+-- is the game in a transition? (between levels or menus)
+is_in_transition = false
 
 -- sequence of letters remaining to emit from the emitter
 remaining_letters_to_emit = {}
@@ -185,6 +202,12 @@ function yield_delay(time)
  for frame=1,nb_frames do  -- still works if nb_frames is not integer (~flr(nb_frames))
   yield()
  end
+end
+
+-- create and register coroutine
+function add_coroutine(async_function)
+ coroutine = cocreate(async_function)
+ add(coroutines, coroutine)
 end
 
 
@@ -422,7 +445,7 @@ function _init()
  -- activate mouse devkit (for mouse input support)
  toggle_mouse(true)
 
- setup_level(0)
+ load_level(1)
 end
 
 function _update()
@@ -437,9 +460,11 @@ function _update()
 end
 
 function _draw()
- draw_gamespace()
- draw_topbar()
- draw_bottombar()
+ if current_gamestate != "start" then
+  draw_gamespace()
+  draw_topbar()
+  draw_bottombar()
+ end
  draw_cursor()
 end
 
@@ -477,7 +502,7 @@ function handle_input()
    if click_position.y < topbar_height then
     -- click on topbar
     if click_position.x >= restart_icon_x and click_position.x < restart_icon_x+16 then
-     reload_current_level()
+     reload_current_level_immediate()
     elseif click_position.x >= exit_icon_x then
      printh("exit (not implemented)")
     end
@@ -499,19 +524,32 @@ end
 -- game flow
 
 -- setup level state by level index
-function setup_level(index)
+function setup_current_level()
+ printh("setup_current_level: "..current_level)
+ current_level_data = levels_data[current_level]
+ assert(current_level_data)
+
+ if current_level_data then
+  printh("draw gamespace current level data: "..current_level_data.map_index)
+ else
+  printh("draw gamespace current level data: nil")
+ end
+
  -- find emitter and toggable elements (will set emitter_location and toggable_actors_linear_map)
  register_dynamic_tiles()
- if not level_data_cache.emitter_location then
+ if not current_level_data_cache.emitter_location then
   printh("error: emitter could not be found on this map")
  end
 
  -- setup game state
  current_gamestate = "playing"
 
+ -- stop locking transitions
+ is_in_transition = false
+
  -- copy start letters sequence
  clear_table(remaining_letters_to_emit)
- for letter in all(level_data.start_letters) do
+ for letter in all(current_level_data.start_letters) do
   add(remaining_letters_to_emit, letter)
  end
 
@@ -525,53 +563,68 @@ function setup_level(index)
  has_started_emission = false
 
  -- ui
- bottom_message = level_data.bottom_message
+ bottom_message = current_level_data.bottom_message
 end
 
-function succeed_current_level()
- current_gamestate = "succeeded"
- bottom_message = "success!"
- load_next_level_after_delay()
+function load_level(level_index)
+ current_level = level_index
+ setup_current_level()
 end
 
 function fail_current_level()
  current_gamestate = "failed"
  bottom_message = "failed!"
- reload_current_level_after_delay()
+ if not is_in_transition then
+  is_in_transition = true
+  add_coroutine(reload_current_level_async)
+ end
 end
 
-function load_next_level_after_delay()
- load_level_coroutine = cocreate(load_next_level_async)
- add(coroutines, load_level_coroutine)
+function succeed_current_level()
+ current_gamestate = "succeeded"
+ bottom_message = "success!"
+ if not is_in_transition then
+  is_in_transition = true
+  if current_level == #levels_data then
+   -- last level succeeded!
+   add_coroutine(finish_game_async)
+  else
+   add_coroutine(load_next_level_async)
+  end
+ end
 end
 
-function reload_current_level_after_delay()
- reload_level_coroutine = cocreate(reload_current_level_async)
- add(coroutines, reload_level_coroutine)
-end
-
-function reload_current_level()
- setup_level(current_level)
+function reload_current_level_immediate()
+ if not is_in_transition then
+  is_in_transition = true
+  setup_current_level()
+ end
 end
 
 function reload_current_level_async()
  yield_delay(2.0)
- setup_level(current_level)
+ setup_current_level()
 end
 
 function load_next_level_async()
+ assert(current_level < #levels_data)
  yield_delay(2.0)
- current_level += 1
- setup_level(current_level)
+ load_level(current_level + 1)
 end
 
+function finish_game_async()
+ yield_delay(2.0)
+ bottom_message = "last level cleared!\ncongratulations!"
+ yield_delay(2.0)
+ load_level(1)
+end
 
 -- logic
 
 -- return the location of dynamic tiles (also the emitter for letter display)
 function register_dynamic_tiles()
  -- reset any previous data to make sure they don't stack when loading a new level
- level_data_cache.emitter_location = nil
+ current_level_data_cache.emitter_location = nil
  clear_table(toggable_actors_linear_map)
 
  for i=0,level_width-1 do
@@ -579,7 +632,7 @@ function register_dynamic_tiles()
    local sprite_id = mget(2*i,2*j)  -- map uses precise location, hence double
    local big_sprite_id = sprite_id_to_big_sprite_id(sprite_id)
    if big_sprite_id == emitter_big_id then
-    level_data_cache.emitter_location = {i = i, j = j}
+    current_level_data_cache.emitter_location = {i = i, j = j}
    elseif is_toggable(big_sprite_id) then
     local linear_index = location_to_map_linear_index({i = i, j = j})
     toggable_actors_linear_map[linear_index] = make_toggable(big_sprite_id)
@@ -602,9 +655,7 @@ end
 function start_emit_letters()
  local emit_coroutine = cocreate(function()
    while #remaining_letters_to_emit > 0 do
-    -- printh("remaining_letters_to_emit before: "..#remaining_letters_to_emit)
     emit_next_letter()
-    -- printh("remaining_letters_to_emit after: "..#remaining_letters_to_emit)
     yield_delay(1.0)
    end
   end)
@@ -614,13 +665,11 @@ end
 
 -- emit the next letter from the emitter
 function emit_next_letter()
- printh("emit_next_letter")
-
  -- get next letter to emit
  local next_letter = remaining_letters_to_emit[1]
 
  -- create and emit letter with default velocity
- local emit_position = location_to_position(level_data_cache.emitter_location)
+ local emit_position = location_to_position(current_level_data_cache.emitter_location)
  local moving_letter = make_moving_letter(next_letter,emit_position.x+8,emit_position.y+10,0,-moving_letter_initial_speed)
 
  -- remove letter from sequence of remaining letters
@@ -634,7 +683,7 @@ function update_coroutines()
  for coroutine in all(coroutines) do
   local status = costatus(coroutine)
   if status == "suspended" then
-   coresume(coroutine)
+   assert(coresume(coroutine))
   elseif status == "dead" then
    coroutine = nil
   else  -- status == "running"
@@ -645,7 +694,6 @@ end
 
 -- toggle a toggable actor
 function toggle(toggable_actor)
- printh("toggle "..toggable_actor.effector_type)
  toggable_actor.active = not toggable_actor.active
 end
 
@@ -709,20 +757,16 @@ function check_all_letters_received()
  end
 
  -- second, check if we received enough letters to pretend to have reached the goal
- if #received_letters == #level_data.goal_letters then
+ if #received_letters == #current_level_data.goal_letters then
   -- then check if the letters are correctly ordered
-  printh("received_letters nb: "..#received_letters)
   for i,received_letter in pairs(received_letters) do
-   printh("comparing "..received_letter.." vs "..level_data.goal_letters[i])
-   if received_letter != level_data.goal_letters[i] then
-    printh("not equal!")
+   if received_letter != current_level_data.goal_letters[i] then
     -- some letters are wrong; continue playing to let player experiment a bit further
     fail_current_level()
     return
    end
   end
   -- all characters are equal
-  printh("equal!")
   succeed_current_level()
  else
   -- different lengths, either some letters have been lost, not duplicated
@@ -771,13 +815,21 @@ function draw_gamespace()
  -- background
  rectfill(0,0,16*level_width-1,16*level_height-1,gamespace_bgcolor)
 
- -- map (8x6 @ 16x16 tiles)
- map(0,0,0,0,level_width*2,level_height*2, 2^static_flag_id)
-
+ -- map (2x everything to get 8x8 -> 16x16 tiles)
+ draw_level_map(current_level_data.map_index)
  draw_toggable_actors()
 
  draw_remaining_letters()
  draw_moving_letters()
+end
+
+function draw_level_map(map_index)
+ -- retrieve location of level map in pico-8 map "bigmap" in memory
+ -- which is 128x32 8x8 it 64x16 16x16
+ local nb_level_maps_per_bigmap_line = flr(128/(2*level_width))
+ local celx = 2*level_width*(map_index%nb_level_maps_per_bigmap_line)
+ local cely = 2*level_height*flr(map_index/nb_level_maps_per_bigmap_line)
+ map(celx,cely,0,0,level_width*2,level_height*2, 2^static_flag_id)
 end
 
 function draw_toggable_actors()
@@ -788,7 +840,7 @@ function draw_toggable_actors()
 end
 
 function draw_remaining_letters()
- local emitter_location = level_data_cache.emitter_location
+ local emitter_location = current_level_data_cache.emitter_location
  if not emitter_location then
   printh("error: emitter location was not found, cannot draw remaining letters")
   return
@@ -796,7 +848,7 @@ function draw_remaining_letters()
 
  for index=1,#remaining_letters_to_emit do
   remaining_letter = remaining_letters_to_emit[index]
-  print(remaining_letter,16*(level_data_cache.emitter_location.i+1)+6*(index-1)+3,16*level_data_cache.emitter_location.j+6,remaining_letter_color)
+  print(remaining_letter,16*(current_level_data_cache.emitter_location.i+1)+6*(index-1)+3,16*current_level_data_cache.emitter_location.j+6,remaining_letter_color)
  end
 end
 
@@ -825,7 +877,7 @@ function draw_topbar()
 end
 
 function draw_goal_letters()
- print("goal:"..join(level_data.goal_letters),goal_letters_start_x,4,goal_letter_color)
+ print("goal:"..join(current_level_data.goal_letters),goal_letters_start_x,4,goal_letter_color)
 end
 
 function draw_received_letters()
