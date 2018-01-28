@@ -43,13 +43,26 @@ fixed_delta_time = 1/30
 
 -- ui parameters
 topbar_height = 16
-goal_letters_start_x = 10
+title_y = 2
+level_id_x = 90
+level_id_y = 2
+start_letters_start_x = 2
+start_letters_start_y = 2
+goal_letters_start_x = 2
+goal_letters_start_y = 9
 received_letters_start_x = 51
-restart_icon_x = 6*16
+received_letters_start_y = 9
+restart_icon_x = 7*16
 exit_icon_x = 7*16
 bottombar_height = 16
 level_width = 8
 level_height = 6
+
+-- text
+title = "-reordered-"
+fail_message = "letters are out-of-order!\ntry again!"
+success_message = "you transmitted the word!\nlevel completed!"
+finish_message = "last level cleared!\ncongratulations!"
 
 -- gameplay parameters
 moving_letter_initial_speed = 50.0  -- original 20.0
@@ -80,10 +93,13 @@ active_color = green
 inactive_color = dark_gray
 
 -- ui
-topbar_bgcolor = indigo
+topbar_bgcolor = black
+title_color = white
+level_id_color = white
+start_letter_color = light_gray
+goal_letter_color = orange
+received_letter_color = red
 remaining_letter_color = indigo
-goal_letter_color = green
-received_letter_color = black
 moving_letter_color = red
 bottombar_bgcolor = black
 bottom_message_color = white
@@ -124,14 +140,14 @@ levels_data = {
   start_letters = {"b", "g", "i"},
   goal_letters = {"b", "i", "g"},
   map_index = 0,
-  bottom_message = "press ❎ to emit letters\nclick to toggle green items"
+  bottom_message = "press ❎ to emit letters\nclick to toggle central arrow"
  },
  {
   id = 2,
   start_letters = {"a", "w", "e", "v"},
   goal_letters = {"w", "a", "v", "e"},
   map_index = 0,
-  bottom_message = "press ❎ to emit letters\nclick to toggle green items"
+  bottom_message = "try a longer word now!"
  }
 }
 
@@ -580,7 +596,7 @@ end
 
 function fail_current_level()
  current_gamestate = "failed"
- bottom_message = "failed!"
+ bottom_message = fail_message
  if not is_in_transition then
   is_in_transition = true
   add_coroutine(reload_current_level_async)
@@ -589,7 +605,7 @@ end
 
 function succeed_current_level()
  current_gamestate = "succeeded"
- bottom_message = "success!"
+ bottom_message = success_message
  if not is_in_transition then
   is_in_transition = true
   if current_level == #levels_data then
@@ -621,7 +637,7 @@ end
 
 function finish_game_async()
  yield_delay(2.0)
- bottom_message = "last level cleared!\ncongratulations!"
+ bottom_message = finish_message
  yield_delay(2.0)
  load_level(1)
 end
@@ -874,21 +890,37 @@ function draw_topbar()
  -- background
  rectfill(0,0,127,topbar_height-1,topbar_bgcolor)
 
+ draw_title()
+ draw_level_id()
+ draw_start_letters()
  draw_goal_letters()
  draw_received_letters()
 
  -- restart
  bigspr(restart_big_id,restart_icon_x,0)
- -- exit
- bigspr(exit_big_id,exit_icon_x,0)
+ -- exit (not implemented until there is a title menu)
+ -- bigspr(exit_big_id,exit_icon_x,0)
+end
+
+function draw_title()
+ -- center x
+ print(title,64-#title*2,title_y,title_color)
+end
+
+function draw_level_id()
+ print("LV"..current_level,level_id_x,level_id_y,level_id_color)
+end
+
+function draw_start_letters()
+ print("start:"..join(current_level_data.start_letters),start_letters_start_x,start_letters_start_y,start_letter_color)
 end
 
 function draw_goal_letters()
- print("goal:"..join(current_level_data.goal_letters),goal_letters_start_x,4,goal_letter_color)
+ print("goal :"..join(current_level_data.goal_letters),goal_letters_start_x,goal_letters_start_y,goal_letter_color)
 end
 
 function draw_received_letters()
- print(join(received_letters),received_letters_start_x,4,goal_letter_color)
+ print(join(received_letters),received_letters_start_x,received_letters_start_y,received_letter_color)
 end
 
 function draw_bottombar()
