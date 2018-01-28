@@ -1,5 +1,7 @@
 # REORDERED
 
+![alt text](https://github.com/hsandt/GGJ2018-Transmission/raw/master/reordered_v0.1_walkthrough_big.gif "Reordered walkthrough gif")
+
 REORDERED, a PICO-8 game made for the Global Game Jam 2018 on the theme "Transmission". The game plays with the concept of out-of-order delivery in computer networking: the player must ensure letters sent between two antennas arrive in a different order than they were sent with, so they can form a meaningful word.
 
 It was made in an unofficial location and is therefore not available on the GGJ website.
