@@ -25,17 +25,39 @@ RECEIVER_ID = to_spritesheet_precise_indices(1,1)  -- 34
 
 -- constants
 FIXED_DELTA_TIME = 1/30
-MOVING_LETTER_INITIAL_SPEED = 10.0
+MOVING_LETTER_INITIAL_SPEED = 50.0  -- original 20.0
 
 -- colors
-MOVING_LETTER_COLOR = 8  -- RED
+BLACK = 0
+DARK_BLUE = 1
+DARK_PURPLE = 2
+DARK_GREEN = 3
+BROWN = 4
+DARK_GRAY = 5
+LIGHT_GRAY = 6
+WHITE = 7
+RED = 8
+ORANGE = 9
+YELLOW = 10
+GREEN = 11
+BLUE = 12
+INDIGO = 13
+PINK = 14
+PEACH = 15
+
+REMAINING_LETTER_COLOR = INDIGO
+RECEIVED_LETTER_COLOR = BLACK
+MOVING_LETTER_COLOR = RED
+BOTTOM_MESSAGE_COLOR = WHITE
 
 
 -- data
 
 level_data = {
  start_letters = {"b", "a"},
- goal_letters = {"a", "b"}
+ -- goal_letters = {"a", "b"}
+ goal_letters = {"b", "a"},
+ bottom_message = "press ❎ to emit letters"
 }
 
 
@@ -51,6 +73,9 @@ level_data_cache = {
 -- index of the curent level
 current_level = 0
 
+-- game state (playing, failed, succeeded)
+current_gamestate = "playing"
+
 -- sequence of letters remaining to emit from the emitter
 remaining_letters_to_emit = {}
 
@@ -60,11 +85,14 @@ received_letters = {}
 -- letters already emitted but not yet received
 moving_letters = {}
 
--- the unique emit coroutine
-emit_coroutine = nil
+-- the current coroutines
+coroutines = {}
 
 -- has the player started emitting letters since the last setup/reset?
 has_started_emission = false
+
+-- UI: hint message at the bottom
+bottom_message = ""
 
 
 -- helpers
@@ -136,8 +164,12 @@ end
 
 function _update()
  handle_input()
- update_emit_coroutine()
- update_moving_letters()
+
+ if current_gamestate == "playing" then
+  update_moving_letters()
+ end
+
+ update_coroutines()
 end
 
 function _draw()
@@ -151,21 +183,27 @@ end
 -- input
 
 function handle_input()
- if not has_started_emission and btnp(❎) then
-  start_emit_letters()
+ if current_gamestate == "playing" then
+  if not has_started_emission and btnp(❎) then
+   start_emit_letters()
+  end
  end
 end
 
 
--- logic
+-- game flow
 
 -- setup level state by level index
 function setup_level(index)
+ -- update level date cache
  local emitter_location = find_emitter_location()
  if not emitter_location then
   printh("error: emitter could not be found on this map")
  end
  level_data_cache.emitter_location = emitter_location
+
+ -- setup game state
+ current_gamestate = "playing"
 
  -- copy start letters sequence
  for letter in all(level_data.start_letters) do
@@ -178,9 +216,33 @@ function setup_level(index)
 
  -- stop and clear the emit coroutine if needed (coroutines must be resumed to continue;
  -- if they aren't and references to them disappear, they will be GC-ed, effectively being stopped)
- emit_coroutine = nil
+ clear_table(coroutines)
  has_started_emission = false
+
+ -- UI
+ bottom_message = level_data.bottom_message
 end
+
+function succeed_current_level()
+ current_gamestate = "succeeded"
+ bottom_message = "success!"
+ load_level_coroutine = cocreate(load_next_level_async)
+ add(coroutines, load_level_coroutine)
+end
+
+function fail_current_level()
+ current_gamestate = "failed"
+ bottom_message = "failed!"
+end
+
+function load_next_level_async()
+ yield_delay(2.0)
+ current_level += 1
+ setup_level(current_level)
+end
+
+
+-- logic
 
 -- return the location of the (supposedly unique) emitter in this level, nil if not found
 function find_emitter_location()
@@ -198,7 +260,7 @@ end
 
 -- start and register coroutine to emit letters at regular intervals from now on
 function start_emit_letters()
- emit_coroutine = cocreate(function()
+ local emit_coroutine = cocreate(function()
    while #remaining_letters_to_emit > 0 do
     -- printh("remaining_letters_to_emit before: "..#remaining_letters_to_emit)
     emit_next_letter()
@@ -207,6 +269,7 @@ function start_emit_letters()
    end
   end)
  has_started_emission = true
+ add(coroutines, emit_coroutine)
 end
 
 -- emit the next letter from the emitter
@@ -227,13 +290,13 @@ function emit_next_letter()
 end
 
 -- update emit coroutine if active, remove if dead
-function update_emit_coroutine()
- if emit_coroutine then
-  local status = costatus(emit_coroutine)
+function update_coroutines()
+ for coroutine in all(coroutines) do
+  local status = costatus(coroutine)
   if status == "suspended" then
-   coresume(emit_coroutine)
+   coresume(coroutine)
   elseif status == "dead" then
-   emit_coroutine = nil
+   coroutine = nil
   else  -- status == "running"
    printh("WARNING: coroutine should not be running outside its body")
   end
@@ -278,10 +341,42 @@ end
 
 -- confirm reception of moving letter
 function receive(moving_letter)
- add(received_letters, moving_letter)
+ add(received_letters, moving_letter.letter)
  del(moving_letters, moving_letter)
+ check_all_letters_received()
 end
 
+function check_all_letters_received()
+ -- first, check if all letters have been sent, as some extra letters at the end
+ -- may invalidate an otherwise good chain, and even in case of early failure we want
+ -- to let the player witness what happens in the long run to improve next time
+ if #remaining_letters_to_emit > 0 or #moving_letters > 0 then
+  -- some letters still on the move, go on
+  return
+ end
+
+ -- second, check if we received enough letters to pretend to have reached the goal
+ if #received_letters == #level_data.goal_letters then
+  -- then check if the letters are correctly ordered
+  printh("received_letters nb: "..#received_letters)
+  for i,received_letter in pairs(received_letters) do
+   printh("comparing "..received_letter.." vs "..level_data.goal_letters[i])
+   if received_letter != level_data.goal_letters[i] then
+    printh("not equal!")
+    -- some letters are wrong; continue playing to let player experiment a bit further
+    fail_current_level()
+    return
+   end
+  end
+  -- all characters are equal
+  printh("equal!")
+  succeed_current_level()
+ else
+  -- different lengths, either some letters have been lost, not duplicated
+  -- as they should or duplicated too much
+  fail_current_level()
+ end
+end
 
 -- render
 
@@ -308,7 +403,7 @@ function draw_remaining_letters()
 
  for index=1,#remaining_letters_to_emit do
   remaining_letter = remaining_letters_to_emit[index]
-  print(remaining_letter, 16*(level_data_cache.emitter_location.i+1)+6*(index-1)+3, 16*level_data_cache.emitter_location.j+6, 13)
+  print(remaining_letter,16*(level_data_cache.emitter_location.i+1)+6*(index-1)+3,16*level_data_cache.emitter_location.j+6,REMAINING_LETTER_COLOR)
  end
 end
 
@@ -316,7 +411,7 @@ function draw_moving_letters()
  for index=1,#moving_letters do
   moving_letter = moving_letters[index]
   -- print the letter a bit offset so the character is centered on its position
-  print(moving_letter.letter, moving_letter.position.x-2, moving_letter.position.y-3, MOVING_LETTER_COLOR)
+  print(moving_letter.letter,moving_letter.position.x-2,moving_letter.position.y-3,MOVING_LETTER_COLOR)
  end
 end
 
@@ -336,8 +431,8 @@ function draw_topbar()
 end
 
 function draw_received_letters()
- for received_letter in all(received_letters) do
-  printh(received_letter.letter)
+ for i,received_letter in pairs(received_letters) do
+  print(received_letter,51+4*i,4,RECEIVED_LETTER_COLOR)
  end
 end
 
@@ -345,7 +440,16 @@ function draw_bottombar()
  -- camera offset: bottom
  camera(0,-112)
 
+ -- background
  rectfill(0,0,127,16,0)
+
+ draw_bottom_message()
+end
+
+function draw_bottom_message()
+ if #bottom_message > 0 then
+  print(bottom_message, 3, 2, WHITE)
+ end
 end
 
 function draw_cursor()
