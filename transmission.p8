@@ -7,19 +7,25 @@ __lua__
 -- position: (x,y) float position
 -- location: (i,j) integer position on the 8x6 map of 16x16 tiles
 -- precise location: (k,l) integer position on the 16x12 map of 8x8 tiles
--- (precise) sprite: 8x8 sprite
+-- (precise, sub-) sprite: 8x8 sprite
 -- big sprite: 16x16 sprite
+-- representative sprite: 8x8 top-left sprite of the big sprite containing a 8x8 sprite
 
 -- flags
 
--- flag 0: should be check for collision
+-- flag 0: is static (set on all sub-sprites so we can draw layer with map, but logic only uses big sprite flag)
+-- flag 1: is toggable (set on all sub-sprites in case we want to draw layer with map or check flag quickly without getting the representative sub-tile)
+-- flag 2: should be check for collision (set on all relevant sub-sprites)
 
+static_flag_id = 0
+toggable_flag_id = 1
+collision_flag_id = 2
 
 -- sprite big id
 
 emitter_big_id = 8
 receiver_big_id = 9
-forwarder_up_big_id = 10
+forwarder_up_big_id = 4
 -- a sprite just below another in the big spritesheet is its toggable variant (if applicable)
 toggable_offset = 8
 
@@ -27,6 +33,8 @@ toggable_offset = 8
 fixed_delta_time = 1/30
 
 -- parameters
+topbar_height = 16
+bottombar_height = 16
 level_width = 8
 level_height = 6
 moving_letter_initial_speed = 50.0  -- original 20.0
@@ -52,11 +60,14 @@ peach = 15
 -- gameplay
 untoggable_color = orange
 toggable_color = green
+gamespace_bgcolor = white
 
 -- ui
+topbar_bgcolor = indigo
 remaining_letter_color = indigo
 received_letter_color = black
 moving_letter_color = red
+bottombar_bgcolor = black
 bottom_message_color = white
 
 
@@ -82,6 +93,11 @@ directions_vector = {
  {x = 1.0, y = 0.0}
 }
 
+effector_types = {
+ forwarder = 1
+}
+
+
 -- data
 
 level_data = {
@@ -101,6 +117,23 @@ level_data_cache = {
 
 -- state variables
 
+-- input info
+input_info = {
+ mouse_primary = {
+  down = false,
+  pressed = false,
+  released = false
+ },
+ mouse_secondary = {
+  down = false,
+  pressed = false,
+  released = false
+ }
+}
+
+-- the current coroutines
+coroutines = {}
+
 -- index of the curent level
 current_level = 0
 
@@ -116,11 +149,11 @@ received_letters = {}
 -- letters already emitted but not yet received
 moving_letters = {}
 
--- the current coroutines
-coroutines = {}
-
 -- has the player started emitting letters since the last setup/reset?
 has_started_emission = false
+
+-- map of all dynamic tiles, by linear index (unwrapping big tile coordinates in 1D)
+toggable_actors_linear_map = {}
 
 -- ui: hint message at the bottom
 bottom_message = ""
@@ -145,41 +178,57 @@ function yield_delay(time)
 end
 
 -- convert 16x16 spritesheet coordinates to 8x8 sprite id
--- (16x16 are easier to visualize for big sprites)
+-- [non-surjective]
 function indices_to_spritesheet_sprite_id(i, j)
  return 32*j+2*i
 end
 
 -- convert 8x8 sprite id to 16x16 spritesheet coordinates
--- (16x16 are easier to visualize for big sprites)
+-- [non-injective]
 function sprite_id_to_spritesheet_indices(sprite_id)
 -- %16 instead of %32 allows support for other sub-sprite than the top-left (representative)
- return {i = flr((sprite_id%16)/2), j = flr(sprite_id/32), }
+ return {i = flr((sprite_id%16)/2), j = flr(sprite_id/32)}
 end
 
 -- convert 8x8 sprite id to 16x16 fictive sprite id (with pages of 8 big sprites per line)
--- (16x16 are easier to visualize for big sprites)
+-- [non-injective]
 function sprite_id_to_big_sprite_id(sprite_id)
  indices = sprite_id_to_spritesheet_indices(sprite_id)
  return 8*indices.j+indices.i
 end
 
+-- convert 16x16 fictive sprite id to 8x8 sprite id (with pages of 8 big sprites per line)
+-- [non-surjective]
+function big_sprite_id_to_sprite_id(big_sprite_id)
+ return 32*flr(big_sprite_id/8)+2*(big_sprite_id%8)
+end
+
 -- return the (x,y) position corresponding to an (i,j) location for 16x16 tiles
+-- [non-surjective]
 function location_to_position(location)
  return {x = 16*location.i, y = 16*location.j}
 end
 
+-- return the (i,j) location corresponding to an (x,y) position for 16x16 tiles
+-- [non-injective]
+function position_to_location(position)
+ return {i = flr(position.x/16), j = flr(position.y/16)}
+end
+
 -- return the (k,l) precise location corresponding to an (x,y) position for 8x8 tiles
+-- [non-injective]
 function position_to_precise_location(position)
  return {k = flr(position.x/8), l = flr(position.y/8)}
 end
 
 -- return the (i,j) location corresponding to a (k,l) precise location for 8x8->16x16 tiles
+-- [non-injective]
 function precise_location_to_location(precise_location)
  return {i = flr(precise_location.k/2), j = flr(precise_location.l/2)}
 end
 
 -- return the (k,l) previse location of the top-left sub-tile of the big tile containing a given sub-tile
+-- [non-injective]
 function to_representative_location(precise_location)
  local location = precise_location_to_location(precise_location)
  return {k = 2*location.i, l = 2*location.j}
@@ -187,12 +236,125 @@ end
 
 -- convert map (i,j) location to a linear index, starting at 0, incremented by moving to
 -- the right then down to the next line, etc.
+-- [bijective]
 function location_to_map_linear_index(location)
  return level_width*location.j+location.i
 end
 
+-- convert map linear index to (i,j) location
+-- [bijective]
+function map_linear_index_to_location(linear_index)
+ return {i = linear_index%level_width, j = flr(linear_index/level_width)}
+end
+
+-- convert screen position to gamespace location
+function screen_position_to_gamespace_location(screen_position)
+ -- subtract top bar height
+ local gamespace_position = {x = screen_position.x, y = screen_position.y-topbar_height}
+ return position_to_location(gamespace_position)
+end
+
+
+-- input helpers
+
+mouse_devkit_address = 0x5f2d
+
+function toggle_mouse(active)
+ value = active and 1 or 0
+ poke(mouse_devkit_address, value)
+end
+
+function get_mouse_screen_position()
+ assert(peek(mouse_devkit_address) == 1)
+ return {x = stat(32), y = stat(33)}
+end
+
+function get_mouse_button_bitmask()
+ assert(peek(mouse_devkit_address) == 1)
+ return stat(34)
+end
+
+-- return true is primary button is currently down
+function get_mouse_primary()
+ return band(get_mouse_button_bitmask(), 0x1) == 0x1
+end
+
+-- return true is secondary button is currently down
+function get_mouse_secondary()
+ return band(get_mouse_button_bitmask(), 0x2) == 0x2
+end
+
+-- return true if button is down according to system
+-- for usage in process_input
+function query_down(button_name)
+ if button_name == "mouse_primary" then
+  return get_mouse_primary()
+ elseif button_name == "mouse_secondary" then
+  return get_mouse_secondary()
+ else
+  printh("error: unknown button name: "..button_name)
+ end
+end
+
+-- return true if button is down according to the input manager
+-- for usage after process_input
+function is_down(button_name)
+ return input_info[button_name].down
+end
+
+-- return true if button has just been pressed according to the input manager
+-- for usage after process_input
+function is_pressed(button_name)
+ return input_info[button_name].pressed
+end
+
+-- return true if button has just been released according to the input manager
+-- for usage after process_input
+function is_released(button_name)
+ return input_info[button_name].released
+end
+
+
+-- draw helpers
+
+-- draw "big" sprite 16x16 of big sprite id at coords (x,y), optionally flipped in x/y
+function bigspr(big_sprite_id, x, y, flip_x, flip_y)
+ spr(big_sprite_id_to_sprite_id(big_sprite_id), x, y, 2, 2, flip_x, flip_y)
+end
+
+-- draw "big" sprite 16x16 of big sprite id at location (i,j), optionally flipped in x/y
+function bigtile(big_sprite_id, location, flip_x, flip_y)
+local sprite_id = big_sprite_id_to_sprite_id(big_sprite_id)
+local position = location_to_position(location)
+ spr(sprite_id, position.x, position.y, 2, 2, flip_x, flip_y)
+end
+
 
 -- factory
+
+function make_toggable(big_sprite_id)
+ printh("make_toggable: "..big_sprite_id)
+ local effector_type = nil
+ local direction = nil
+ printh("forwarder_up_big_id+toggable_offset: "..forwarder_up_big_id+toggable_offset)
+ if big_sprite_id >= forwarder_up_big_id+toggable_offset and big_sprite_id < forwarder_up_big_id+toggable_offset+4 then
+  effector_type = effector_types.forwarder
+  direction = directions_sequence[big_sprite_id-(forwarder_up_big_id+toggable_offset)+1]  -- sequence starts at 1
+ end
+
+ if not effector_type then
+  printh("error: unknown effector type")
+  return nil
+ end
+
+ local toggable_actor = {
+  big_sprite_id = big_sprite_id,
+  effector_type = effector_type,
+  direction = direction,
+  active = true
+ }
+ return toggable_actor
+end
 
 function make_moving_letter(letter, x, y, vx, vy)
  local moving_letter = {
@@ -216,12 +378,13 @@ function _init()
  run_unit_tests()
 
  -- activate mouse devkit (for mouse input support)
- poke(0x5f2d, 1)
+ toggle_mouse(true)
 
  setup_level(0)
 end
 
 function _update()
+ process_input()
  handle_input()
 
  if current_gamestate == "playing" then
@@ -241,10 +404,49 @@ end
 
 -- input
 
+function process_input()
+ for button_name, button_state in pairs(input_info) do
+  -- release any previous pressed/release
+  button_state.pressed = false
+  button_state.released = false
+
+  -- check previous mouse button state to decide if button has just been pressed
+  -- also update the mouse button current state
+  if not button_state.down and query_down(button_name) then
+    button_state.down = true
+    button_state.pressed = true
+  elseif button_state.down and not query_down(button_name) then
+   button_state.down = false
+   button_state.released = true
+  end
+ end
+
+ if is_down("mouse_primary") then
+  printh("primary")
+ end
+ if is_pressed("mouse_primary") then
+  printh("pressed primary")
+ end
+ if is_released("mouse_primary") then
+  printh("released primary")
+ end
+
+end
+
 function handle_input()
  if current_gamestate == "playing" then
+  -- emission
   if not has_started_emission and btnp(❎) then
    start_emit_letters()
+  end
+
+  -- toggle
+  if is_pressed("mouse_primary") then
+   local location = screen_position_to_gamespace_location(get_mouse_screen_position())
+   local toggable_actor = toggable_actors_linear_map[location]
+   if toggable_actor then
+    toggle(toggable_actor)
+   end
   end
  end
 end
@@ -254,12 +456,11 @@ end
 
 -- setup level state by level index
 function setup_level(index)
- -- update level date cache
- local emitter_location = find_emitter_location()
- if not emitter_location then
+ -- find emitter and toggable elements (will set emitter_location and toggable_actors_linear_map)
+ register_dynamic_tiles()
+ if not level_data_cache.emitter_location then
   printh("error: emitter could not be found on this map")
  end
- level_data_cache.emitter_location = emitter_location
 
  -- setup game state
  current_gamestate = "playing"
@@ -303,19 +504,27 @@ end
 
 -- logic
 
--- return the location of the (supposedly unique) emitter in this level, nil if not found
-function find_emitter_location()
+-- return the location of dynamic tiles (also the emitter for letter display)
+function register_dynamic_tiles()
  local emitter_location = nil
- for i=0,7 do
-  for j=0,5 do
+ for i=0,level_width-1 do
+  for j=0,level_height-1 do
    local sprite_id = mget(2*i,2*j)  -- map uses precise location, hence double
    local big_sprite_id = sprite_id_to_big_sprite_id(sprite_id)
    if big_sprite_id == emitter_big_id then
-    return {i = i, j = j}
+    level_data_cache.emitter_location = {i = i, j = j}
+   elseif is_toggable(big_sprite_id) then
+    local linear_index = location_to_map_linear_index({i = i, j = j})
+    toggable_actors_linear_map[linear_index] = make_toggable(big_sprite_id)
+    printh("added toggable "..toggable_actors_linear_map[linear_index].effector_type.." at "..linear_index)
    end
   end
  end
- return nil
+end
+
+function is_toggable(big_sprite_id)
+ local sprite_id = big_sprite_id_to_sprite_id(big_sprite_id)
+ return fget(sprite_id, toggable_flag_id)
 end
 
 -- start and register coroutine to emit letters at regular intervals from now on
@@ -363,6 +572,11 @@ function update_coroutines()
  end
 end
 
+-- toggle a toggable actor
+function toggle(toggable_actor)
+ toggable_actor.active = not toggable_actor.active
+end
+
 
 -- physics
 
@@ -386,16 +600,21 @@ function check_collision(moving_letter)
  local precise_location = position_to_precise_location(moving_letter.position)
  local precise_sprite_id = mget(precise_location.k, precise_location.l)
  if precise_sprite_id != 0 then
-  local collision_flag = fget(precise_sprite_id, 0)
+  local collision_flag = fget(precise_sprite_id, collision_flag_id)
   if collision_flag then
    -- for colliding sprite id, we use the location of the big tile since it's easier to compare
    -- with just the top-left tile id than with all 4 sub-tile ids (it's the same 1 time out of 4)
    local big_sprite_id = sprite_id_to_big_sprite_id(precise_sprite_id)
+   local toggable_flag = fget(precise_sprite_id, toggable_flag_id)  -- caution: this requires to set toggable flag on all sub-tiles
+   local location = precise_location_to_location(precise_location)
+
    if big_sprite_id == receiver_big_id then
     receive(moving_letter)
-   elseif is_forwarder(big_sprite_id) then
-    local forwarder_direction = get_forwarder_direction(big_sprite_id)
-    forward(moving_letter, forwarder_direction)
+   else
+    local out_info = {}
+    if check_if_forwarder(big_sprite_id, toggable_flag, location, out_info) then
+     forward(moving_letter, out_info.direction)
+    end
    end
   end
  end
@@ -440,16 +659,26 @@ function check_all_letters_received()
  end
 end
 
--- return true if the big sprite id represents a forwarder
-function is_forwarder(big_sprite_id)
- return big_sprite_id >= forwarder_up_big_id and big_sprite_id < forwarder_up_big_id + 4
-end
-
--- return forwarder direction, assuming big sprite id is a forwarder
-function get_forwarder_direction(big_sprite_id)
- assert(is_forwarder(big_sprite_id))
- local offset = big_sprite_id - forwarder_up_big_id + 1  -- +1 because sequence index starts at 1
- return directions_sequence[offset]
+-- return true if the big sprite id represents a forwarder that is static or active
+-- out_info contains the forwarder direction if return true
+function check_if_forwarder(big_sprite_id, toggable_flag, location, out_info)
+ if not toggable_flag then
+  -- check for static forwarder
+  if big_sprite_id >= forwarder_up_big_id and big_sprite_id < forwarder_up_big_id + 4 then
+   local offset = big_sprite_id - forwarder_up_big_id + 1  -- +1 because sequence index starts at 1
+   out_info.direction = directions_sequence[offset]
+   return true
+  end
+ else
+  -- check for toggable forwarder
+  local toggable_actor = toggable_actors_linear_map[location_to_map_linear_index(location)]
+  assert(toggable_actor)
+  if toggable_actor.effector_type == effector_types.forwarder and toggable_actor.active then
+   out_info.direction = toggable_actor.direction
+   return true
+  end
+ end
+ return false
 end
 
 -- changes the velocity of the moving letter toward a new direction, preserves speed
@@ -465,16 +694,26 @@ end
 
 function draw_gamespace()
  -- camera offset
- camera(0,-16)
+ camera(0,-topbar_height)
 
  -- background
- rectfill(0,0,127,96,7)
+ rectfill(0,0,16*level_width-1,16*level_height-1,gamespace_bgcolor)
 
  -- map (8x6 @ 16x16 tiles)
- map(0,0,0,0,level_width*2,level_height*2)
+ map(0,0,0,0,level_width*2,level_height*2, 2^static_flag_id)
+
+ draw_toggable_actors()
 
  draw_remaining_letters()
  draw_moving_letters()
+end
+
+function draw_toggable_actors()
+ for linear_index,toggable_actor in pairs(toggable_actors_linear_map) do
+  printh("linear_index: "..linear_index)
+  local location = map_linear_index_to_location(linear_index)
+  bigtile(toggable_actor.big_sprite_id, location)
+ end
 end
 
 function draw_remaining_letters()
@@ -503,7 +742,7 @@ function draw_topbar()
  camera(0,0)
 
  -- background
- rectfill(0,0,127,15,13)
+ rectfill(0,0,127,topbar_height-1,topbar_bgcolor)
 
  draw_received_letters()
 
@@ -521,10 +760,10 @@ end
 
 function draw_bottombar()
  -- camera offset: bottom
- camera(0,-112)
+ camera(0,-(topbar_height+16*level_height))
 
  -- background
- rectfill(0,0,127,15,0)
+ rectfill(0,0,127,bottombar_height-1,bottombar_bgcolor)
 
  draw_bottom_message()
 end
@@ -544,10 +783,6 @@ camera(0,0)
  spr(6,cursor_x,cursor_y)
 end
 
--- draw "big" sprite 16x16 of meta-number n at coords (x,y), optionally flipped in x/y, where n is defined for a spritesheet containing only 16x16 sprites
-function bigspr(n, x, y, flip_x, flip_y)
- spr(32*flr(n/8)+2*(n%8), x, y, 2, 2, flip_x, flip_y)
-end
 
 -- unit tests
 
@@ -559,6 +794,7 @@ function run_unit_tests()
  assert(indices_to_spritesheet_sprite_id(1,1) == 34)
  assert(indices_to_spritesheet_sprite_id(7,1) == 46)
 
+ local indices
  indices = sprite_id_to_spritesheet_indices(0)
  assert(indices.i == 0 and indices.j == 0)
  indices = sprite_id_to_spritesheet_indices(1)
@@ -614,6 +850,34 @@ function run_unit_tests()
  assert(sprite_id_to_big_sprite_id(33) == 8)
  assert(sprite_id_to_big_sprite_id(62) == 15)
  assert(sprite_id_to_big_sprite_id(63) == 15)
+
+ assert(location_to_map_linear_index({i = 0, j = 0}) == 0)
+ assert(location_to_map_linear_index({i = 1, j = 0}) == 1)
+ assert(location_to_map_linear_index({i = 7, j = 0}) == 7)
+ assert(location_to_map_linear_index({i = 0, j = 1}) == 8)
+ assert(location_to_map_linear_index({i = 1, j = 1}) == 9)
+ assert(location_to_map_linear_index({i = 7, j = 1}) == 15)
+
+ location = map_linear_index_to_location(0)
+ assert(location.i == 0 and location.j == 0)
+ location = map_linear_index_to_location(1)
+ assert(location.i == 1 and location.j == 0)
+ location = map_linear_index_to_location(7)
+ assert(location.i == 7 and location.j == 0)
+ location = map_linear_index_to_location(8)
+ assert(location.i == 0 and location.j == 1)
+ location = map_linear_index_to_location(9)
+ assert(location.i == 1 and location.j == 1)
+ location = map_linear_index_to_location(15)
+ assert(location.i == 7 and location.j == 1)
+
+ -- reciprocity
+ assert(location_to_map_linear_index(map_linear_index_to_location(23)) == 23)
+ assert(location_to_map_linear_index(map_linear_index_to_location(36)) == 36)
+ location = map_linear_index_to_location(location_to_map_linear_index({i = 3, j = 5}))
+ assert(location.i == 3 and location.j == 5)
+ location = map_linear_index_to_location(location_to_map_linear_index({i = 7, j = 2}))
+ assert(location.i == 7 and location.j == 2)
 end
 
 __gfx__
@@ -650,7 +914,7 @@ __gfx__
 00000dddddd000000000003333000000500000000000000500000000000000000000000000000000000000000000000000000000000000000000000000000000
 00000000000000000000000000000000555000000000055500000000000000000000000000000000000000000000000000000000000000000000000000000000
 __gff__
-0000000000000000010101010101010100000000000000000101010101010101000001010000000001010101010101010000010100000000010101010101010100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+0000000000000000050505050505050500000000000000000505050505050505010105050101000006060606060606060101050501010000060606060606060600000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 __map__
 2425242524252223242524250c0d242500000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
