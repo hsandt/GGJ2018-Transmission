@@ -34,7 +34,7 @@ exit_big_id = 2
 emitter_big_id = 8
 receiver_big_id = 9
 forwarder_up_big_id = 4
-mirror_horizontal_big_id = 17
+mirror_horizontal_big_id = 16
 
 -- a sprite just below another in the big spritesheet is its toggable variant (if applicable)
 toggable_offset = 8
@@ -143,10 +143,18 @@ mirror_directions = {
 }
 
 mirror_directions_sequence = {
- directions.horizontal, -- like -
- directions.vertical,   -- like |
- directions.slash,      -- like / but at 45 degrees
- directions.antislash   -- like \ but at 45 degrees
+ mirror_directions.horizontal, -- like -
+ mirror_directions.vertical,   -- like |
+ mirror_directions.slash,      -- like / but at 45 degrees
+ mirror_directions.antislash   -- like \ but at 45 degrees
+}
+
+-- mirror normals (can be not unit, in any sense)
+mirror_directions_normal = {
+ {x = 0.0, y = 1.0},
+ {x = 1.0, y = 0.0},
+ {x = 1.0, y = 1.0},  -- convention y down!
+ {x = 1.0, y = -1.0}  -- convention y down!
 }
 
 effector_types = {
@@ -425,6 +433,55 @@ function is_released(button_name)
 end
 
 
+-- math helpers
+
+v8 = {x = 8, y = 8}
+v16 = {x = 16, y = 16}
+
+function vector_to_string(v)
+ return "("..v.x..","..v.y..")"
+end
+
+function vector_length(v)
+ return sqrt(v.x^2+v.y^2)
+end
+
+function vector_sqrlength(v)
+ return v.x^2+v.y^2
+end
+
+function vector_oppose(v)
+ return {x = -v.x, y = -v.y}
+end
+
+function vector_add(v, w)
+ return {x = v.x+w.x, y = v.y+w.y}
+end
+
+function vector_sub(v, w)
+ return {x = v.x-w.x, y = v.y-w.y}
+end
+
+function dot(v, w)
+ return v.x*w.x+v.y*w.y
+end
+
+function project_parallel(v, w)
+ local projected_abs = dot(v,w)/vector_sqrlength(w)
+ return {x = projected_abs*w.x, y = projected_abs*w.y}
+end
+
+function project_ortho(v, w)
+ local projected_parallel = project_parallel(v,w)
+ return vector_sub(v,projected_parallel)
+end
+
+function reflect(v,w)
+ local projected_parallel = project_parallel(v,w)
+ local projected_ortho = vector_sub(v,projected_parallel)
+ return vector_sub(projected_parallel,projected_ortho)
+end
+
 -- draw helpers
 
 -- draw "big" sprite 16x16 of big sprite id at coords (x,y), optionally flipped in x/y
@@ -590,12 +647,6 @@ function setup_current_level()
  printh("setup_current_level: "..current_level)
  current_level_data = levels_data[current_level]
  assert(current_level_data)
-
- if current_level_data then
-  printh("draw gamespace current level data: "..current_level_data.map_index)
- else
-  printh("draw gamespace current level data: nil")
- end
 
  -- find emitter and toggable elements (will set emitter_location and toggable_actors_linear_map)
  register_dynamic_tiles(current_level_data.map_index)
@@ -822,6 +873,10 @@ function check_collision(moving_letter)
     local out_info = {}
     if check_if_forwarder(big_sprite_id, toggable_flag, location, out_info) then
      forward(moving_letter, out_info.direction)
+    elseif check_if_mirror(big_sprite_id, toggable_flag, location, out_info) then
+     mirror(moving_letter, out_info.direction, location)
+    else
+     printh("error: unsupported collider: (big_sprite_id: "..big_sprite_id..", toggable_flag: "..(toggable_flag and "true" or "false")..", location: "..location.i..","..location.j..")")
     end
    end
   end
@@ -885,21 +940,24 @@ function check_success_and_failure()
  end
 end
 
--- return true if the big sprite id represents a forwarder that is static or active
--- out_info contains the forwarder direction if return true
-function check_if_forwarder(big_sprite_id, toggable_flag, location, out_info)
+-- return true if the big sprite id represents an effector of a given type,
+-- that is static or active
+-- out_info contains the effector direction if return true
+-- we also pass the effector_directions_sequence, although not required since
+-- they all come back to values 1, 2, 3, 4 in the end
+function check_if_effector(effector_type, first_big_sprite_id, effector_directions_sequence, big_sprite_id, toggable_flag, location, out_info)
  if not toggable_flag then
-  -- check for static forwarder
-  if big_sprite_id >= forwarder_up_big_id and big_sprite_id < forwarder_up_big_id + 4 then
-   local offset = big_sprite_id - forwarder_up_big_id + 1  -- +1 because sequence index starts at 1
-   out_info.direction = directions_sequence[offset]
+  -- check for static effector of this type
+  local offset = big_sprite_id - first_big_sprite_id
+  if offset >= 0 and offset < 4 then
+   out_info.direction = effector_directions_sequence[offset+1]  -- sequence index starts at 1
    return true
   end
  else
-  -- check for toggable forwarder
+  -- check for toggable effector of this type
   local toggable_actor = get_toggable_actor_at_location(location)
   assert(toggable_actor)
-  if toggable_actor.effector_type == effector_types.forwarder and toggable_actor.active then
+  if toggable_actor.effector_type == effector_type and toggable_actor.active then
    out_info.direction = toggable_actor.direction
    return true
   end
@@ -907,7 +965,21 @@ function check_if_forwarder(big_sprite_id, toggable_flag, location, out_info)
  return false
 end
 
--- changes the velocity of the moving letter toward a new direction, preserves speed
+-- return true if the big sprite id represents a forwarder that is static or active
+-- out_info contains the forwarder direction if return true
+function check_if_forwarder(big_sprite_id, toggable_flag, location, out_info)
+ return check_if_effector(effector_types.forwarder, forwarder_up_big_id, directions_sequence,
+  big_sprite_id, toggable_flag, location, out_info)
+end
+
+-- return true if the big sprite id represents a mirror that is static or active
+-- out_info contains the mirror direction if return true
+function check_if_mirror(big_sprite_id, toggable_flag, location, out_info)
+ return check_if_effector(effector_types.mirror, mirror_horizontal_big_id, mirror_directions_sequence,
+  big_sprite_id, toggable_flag, location, out_info)
+end
+
+-- change the velocity of the moving letter toward a new direction, preserves speed
 function forward(moving_letter, direction)
  local speed = sqrt(moving_letter.velocity.x^2+moving_letter.velocity.y^2)
  local direction_vector = directions_vector[direction]
@@ -915,6 +987,23 @@ function forward(moving_letter, direction)
  moving_letter.velocity.y = speed*direction_vector.y
 end
 
+-- mirror the velocity of the moving letter orthogonally to a direction, preserves speed
+function mirror(moving_letter, direction, location)
+ -- check if letter is moving toward the mirror, or has already been reflected and is going away
+ -- for 45 degree motion, the test below is enough to decide if letter is ahead toward mirror
+ -- for more precision, we'd need to check for future trajectory with mirror segment collision
+ local mirror_center = vector_add(location_to_position(location), v8)
+ local relative_position = vector_sub(moving_letter.position,mirror_center)
+ local normal = mirror_directions_normal[direction]  -- normal doesn't need to be unit, reflect will normalize
+ local position_side_dot = dot(relative_position,normal)  -- normal convention doesn't matter, it's to compare
+ local velocity_side_dot = dot(moving_letter.velocity,normal)
+ if (position_side_dot < 0 and velocity_side_dot > 0) or
+   (position_side_dot > 0 and velocity_side_dot < 0) then
+  -- caution: a wave reflection bounces on the tangent, so we need the opposite of the reflected vector!
+  local mirrored_velocity = vector_oppose(reflect(moving_letter.velocity,normal))
+  moving_letter.velocity = mirrored_velocity
+ end
+end
 
 -- render
 
@@ -1136,6 +1225,24 @@ function run_unit_tests()
  assert(location.i == 3 and location.j == 5)
  location = map_linear_index_to_location(location_to_map_linear_index({i = 7, j = 2}))
  assert(location.i == 7 and location.j == 2)
+
+ local v = {x = 1, y = 1}
+ local w = {x = 0, y = -1}
+ assert(vector_length(v)==sqrt(2))
+ assert(vector_sqrlength(v)==2)
+ local x = vector_add(v,w)
+ assert(x.x==1 and x.y==0)
+ x = vector_sub(v,w)
+ assert(x.x==1 and x.y==2)
+ assert(dot(v,w)==-1)
+ x = project_parallel(v,w)
+ assert(x.x==0 and x.y==1)
+ x = project_ortho(v,w)
+ assert(x.x==1 and x.y==0)
+ x = reflect(v,w)
+ assert(x.x==-1 and x.y==1)
+ x = reflect(w,v)
+ assert(x.x==-1 and x.y==0)
 end
 
 __gfx__
