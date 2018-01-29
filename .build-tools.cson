@@ -1,0 +1,37 @@
+providers: [
+  {
+    key: "bt"
+    config:
+      commands: [
+        {
+          project: "/Users/hs/Library/Application Support/pico-8/carts/ggj2018"
+          source: "/Users/hs/Library/Application Support/pico-8/carts/ggj2018/.build-tools.cson"
+          name: "run"
+          command: "\"/Applications/Game Development/PICO-8/PICO-8.app/Contents/MacOS/pico8\" -run %f"
+          wd: "."
+          env: {}
+          modifier:
+            wildcards: {}
+            save_all: {}
+          environment:
+            name: "child_process"
+            config:
+              stdoe: "both"
+          stdout:
+            pipeline: []
+          stderr:
+            pipeline: []
+          output:
+            console:
+              close_success: false
+              queue_in_buffer: true
+              colors: false
+              stdin: false
+            linter:
+              no_trace: false
+              immediate: false
+          version: 2
+        }
+      ]
+  }
+]
