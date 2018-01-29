@@ -34,9 +34,12 @@ exit_big_id = 2
 emitter_big_id = 8
 receiver_big_id = 9
 forwarder_up_big_id = 4
+mirror_horizontal_big_id = 17
 
 -- a sprite just below another in the big spritesheet is its toggable variant (if applicable)
 toggable_offset = 8
+toggable_forwarder_up_big_id = forwarder_up_big_id+toggable_offset
+toggable_mirror_horizontal_big_id = mirror_horizontal_big_id+toggable_offset
 
 -- constants
 fixed_delta_time = 1/30
@@ -55,12 +58,17 @@ received_letters_start_y = 9
 restart_icon_x = 7*16
 exit_icon_x = 7*16
 bottombar_height = 16
+
+-- dimensions
 level_width = 8
 level_height = 6
+deadzone_margin = 0
 
 -- text
 title = "-reordered-"
-fail_message = "letters are out-of-order!\ntry again!"
+fail_message_wrong_letter_sequence = "letters are out-of-order!\ntry again!"
+fail_message_too_short = "some letters are missing!\ntry again!"
+fail_message_too_long = "there are too many letters!\ntry again!"
 success_message = "you transmitted the word!\nlevel completed!"
 finish_message = "last level cleared!\ncongratulations!"
 
@@ -127,14 +135,41 @@ directions_vector = {
  {x = 1.0, y = 0.0}
 }
 
-effector_types = {
- forwarder = "forwarder"
+mirror_directions = {
+ horizontal = 1,
+ vertical = 2,
+ slash = 3,
+ antislash = 4
 }
 
+mirror_directions_sequence = {
+ directions.horizontal, -- like -
+ directions.vertical,   -- like |
+ directions.slash,      -- like / but at 45 degrees
+ directions.antislash   -- like \ but at 45 degrees
+}
+
+effector_types = {
+ forwarder = "forwarder",
+ mirror = "mirror"
+}
+
+fail_causes = {
+ wrong_letter_sequence = 1,
+ too_short = 2,
+ too_long = 3
+}
 
 -- data
 
 levels_data = {
+ {
+  id = 3,
+  start_letters = {"b", "g", "i"},
+  goal_letters = {"b", "i", "g"},
+  map_index = 1,
+  bottom_message = "press ❎ to emit letters\nclick to toggle central arrow"
+ },
  {
   id = 1,
   start_letters = {"b", "g", "i"},
@@ -425,9 +460,12 @@ end
 function make_toggable(big_sprite_id)
  local effector_type = nil
  local direction = nil
- if big_sprite_id >= forwarder_up_big_id+toggable_offset and big_sprite_id < forwarder_up_big_id+toggable_offset+4 then
+ if big_sprite_id >= toggable_forwarder_up_big_id and big_sprite_id < toggable_forwarder_up_big_id+4 then
   effector_type = effector_types.forwarder
-  direction = directions_sequence[big_sprite_id-(forwarder_up_big_id+toggable_offset)+1]  -- sequence starts at 1
+  direction = directions_sequence[big_sprite_id-(toggable_forwarder_up_big_id)+1]  -- sequence starts at 1
+ elseif big_sprite_id >= mirror_horizontal_big_id+toggable_offset and big_sprite_id < mirror_horizontal_big_id+toggable_offset+4 then
+  effector_type = effector_types.mirror
+  direction = mirror_directions_sequence[big_sprite_id-(toggable_mirror_horizontal_big_id)+1]  -- sequence starts at 1
  end
 
  if not effector_type then
@@ -454,7 +492,8 @@ function make_moving_letter(letter, x, y, vx, vy)
   velocity = {
    x = vx,
    y = vy
-  }
+  },
+  active = true
  }
  return moving_letter
 end
@@ -559,7 +598,7 @@ function setup_current_level()
  end
 
  -- find emitter and toggable elements (will set emitter_location and toggable_actors_linear_map)
- register_dynamic_tiles()
+ register_dynamic_tiles(current_level_data.map_index)
  if not current_level_data_cache.emitter_location then
   printh("error: emitter could not be found on this map")
  end
@@ -594,9 +633,19 @@ function load_level(level_index)
  setup_current_level()
 end
 
-function fail_current_level()
+function fail_current_level(fail_cause)
  current_gamestate = "failed"
- bottom_message = fail_message
+
+ if fail_cause == fail_causes.wrong_letter_sequence then
+  bottom_message = fail_message_wrong_letter_sequence
+ elseif fail_cause == fail_causes.too_short then
+  bottom_message = fail_message_too_short
+ elseif fail_cause == fail_causes.too_long then
+  bottom_message = fail_message_too_long
+ else
+  bottom_message = "failed for unknown reason"
+ end
+
  if not is_in_transition then
   is_in_transition = true
   add_coroutine(reload_current_level_async)
@@ -642,24 +691,31 @@ function finish_game_async()
  load_level(1)
 end
 
--- logic
+-- map
 
 -- return the location of dynamic tiles (also the emitter for letter display)
-function register_dynamic_tiles()
+function register_dynamic_tiles(map_index)
  -- reset any previous data to make sure they don't stack when loading a new level
  current_level_data_cache.emitter_location = nil
  clear_table(toggable_actors_linear_map)
 
+ local celx, cely = get_map_topleft(map_index)
+
  for i=0,level_width-1 do
   for j=0,level_height-1 do
-   local sprite_id = mget(2*i,2*j)  -- map uses precise location, hence double
+   local sprite_id = mget(celx+2*i,cely+2*j)  -- map uses precise location, hence double
    local big_sprite_id = sprite_id_to_big_sprite_id(sprite_id)
    if big_sprite_id == emitter_big_id then
     current_level_data_cache.emitter_location = {i = i, j = j}
    elseif is_toggable(big_sprite_id) then
     local linear_index = location_to_map_linear_index({i = i, j = j})
-    toggable_actors_linear_map[linear_index] = make_toggable(big_sprite_id)
-    printh("added toggable "..toggable_actors_linear_map[linear_index].effector_type.." at "..linear_index)
+    local toggable_actor = make_toggable(big_sprite_id)
+    if toggable_actor then
+     toggable_actors_linear_map[linear_index] = toggable_actor
+     printh("added toggable "..toggable_actor.effector_type.." at "..linear_index)
+    else
+     printh("->error: could not make toggable actor")
+    end
    end
   end
  end
@@ -673,6 +729,9 @@ end
 function get_toggable_actor_at_location(location)
  return toggable_actors_linear_map[location_to_map_linear_index(location)]
 end
+
+
+-- gameplay
 
 -- start and register coroutine to emit letters at regular intervals from now on
 function start_emit_letters()
@@ -726,7 +785,11 @@ end
 function update_moving_letters()
  for moving_letter in all(moving_letters) do
   update_position(moving_letter)
-  check_collision(moving_letter)
+  check_out_of_bounds(moving_letter)
+  -- the previous check may have killed the moving letter
+  if moving_letter.active then
+   check_collision(moving_letter)
+  end
  end
 end
 
@@ -738,17 +801,19 @@ end
 
 -- check if moving letter entered a tile with a special effect, and apply it if so
 function check_collision(moving_letter)
+ local celx, cely = get_map_topleft(current_level_data.map_index)
+
  -- since some object colliders occupy precise tiles (e.g. the mirror), we need precise location
  -- to check for collision flag
  local precise_location = position_to_precise_location(moving_letter.position)
- local precise_sprite_id = mget(precise_location.k, precise_location.l)
+ local precise_sprite_id = mget(celx+precise_location.k,cely+precise_location.l)
  if precise_sprite_id != 0 then
-  local collision_flag = fget(precise_sprite_id, collision_flag_id)
+  local collision_flag = fget(precise_sprite_id,collision_flag_id)
   if collision_flag then
    -- for colliding sprite id, we use the location of the big tile since it's easier to compare
    -- with just the top-left tile id than with all 4 sub-tile ids (it's the same 1 time out of 4)
    local big_sprite_id = sprite_id_to_big_sprite_id(precise_sprite_id)
-   local toggable_flag = fget(precise_sprite_id, toggable_flag_id)  -- caution: this requires to set toggable flag on all sub-tiles
+   local toggable_flag = fget(precise_sprite_id,toggable_flag_id)  -- caution: this requires to set toggable flag on all sub-tiles
    local location = precise_location_to_location(precise_location)
 
    if big_sprite_id == receiver_big_id then
@@ -763,14 +828,34 @@ function check_collision(moving_letter)
  end
 end
 
+-- destroy letters completely outside the screen
+function check_out_of_bounds(moving_letter)
+ -- we want to check if the letter center is outside the screen, + a small offset
+ -- to make sure it is not still rendered on the screen edges, so we check its
+ -- exact position rather than the rounded location
+ if moving_letter.position.x < 0-deadzone_margin or
+   moving_letter.position.x >= 16*level_width+deadzone_margin or
+   moving_letter.position.y < 0-deadzone_margin or
+   moving_letter.position.y >= 16*level_height+deadzone_margin then
+  kill_letter(moving_letter)
+ end
+end
+
+function kill_letter(moving_letter)
+ printh("kill_letter: "..moving_letter.letter)
+ moving_letter.active = false  -- flag so we know it's dead until it's garbage collected
+ del(moving_letters, moving_letter)
+ check_success_and_failure()
+end
+
 -- confirm reception of moving letter
 function receive(moving_letter)
  add(received_letters, moving_letter.letter)
  del(moving_letters, moving_letter)
- check_all_letters_received()
+ check_success_and_failure()
 end
 
-function check_all_letters_received()
+function check_success_and_failure()
  -- first, check if all letters have been sent, as some extra letters at the end
  -- may invalidate an otherwise good chain, and even in case of early failure we want
  -- to let the player witness what happens in the long run to improve next time
@@ -785,16 +870,18 @@ function check_all_letters_received()
   for i,received_letter in pairs(received_letters) do
    if received_letter != current_level_data.goal_letters[i] then
     -- some letters are wrong; continue playing to let player experiment a bit further
-    fail_current_level()
+    fail_current_level(fail_causes.wrong_letter_sequence)
     return
    end
   end
   -- all characters are equal
   succeed_current_level()
+ elseif #received_letters < #current_level_data.goal_letters then
+  -- some letters were lost (or not duplicated enough)
+  fail_current_level(fail_causes.too_short)
  else
-  -- different lengths, either some letters have been lost, not duplicated
-  -- as they should or duplicated too much
-  fail_current_level()
+  -- too many duplications (or not lost enough)
+  fail_current_level(fail_causes.too_long)
  end
 end
 
@@ -846,12 +933,18 @@ function draw_gamespace()
  draw_moving_letters()
 end
 
-function draw_level_map(map_index)
- -- retrieve location of level map in pico-8 map "bigmap" in memory
- -- which is 128x32 8x8 it 64x16 16x16
+-- return the topleft (celx, cely) of a map by index
+function get_map_topleft(map_index)
  local nb_level_maps_per_bigmap_line = flr(128/(2*level_width))
  local celx = 2*level_width*(map_index%nb_level_maps_per_bigmap_line)
  local cely = 2*level_height*flr(map_index/nb_level_maps_per_bigmap_line)
+ return celx, cely
+end
+
+function draw_level_map(map_index)
+ -- retrieve location of level map in pico-8 map "bigmap" in memory
+ -- which is 128x32 8x8 it 64x16 16x16
+ local celx, cely = get_map_topleft(map_index)
  map(celx,cely,0,0,level_width*2,level_height*2, 2^static_flag_id)
 end
 
@@ -908,7 +1001,7 @@ function draw_title()
 end
 
 function draw_level_id()
- print("lv"..current_level,level_id_x,level_id_y,level_id_color)
+ print("lv"..current_level_data.id,level_id_x,level_id_y,level_id_color)
 end
 
 function draw_start_letters()
@@ -1111,18 +1204,18 @@ dddddddddddddddd0000000dd0000000000000dd0000000000000000ddd000000000000000000000
 00000000000000000000000330000000330000000000000000000000000000330000000000000000000000000000000000000000000000000000000000000000
 00000000000000000000000330000000330000000000000000000000000000330000000000000000000000000000000000000000000000000000000000000000
 __gff__
-0000000000000000050505050505050500000000000000000505050505050505010105050101000006060606060606060101050501010000060606060606060600000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+0000000000000000050505050505050500000000000000000505050505050505010105050101000006060606060606060101050501010000060606060606060605050505010505010000000000000000050505050501010500000000000000000606060602060602000000000000000006060606060202060000000000000000
 0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 __map__
-2425242524252223242524250c0d242500000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-3435343534353233343534351c1d343500000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-2425242524252425242524252425242500000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-3435343534353435343534353435343500000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-2425242524252e2f242524250809242500000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-3435343534353e3f343534351819343500000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-2425242524252425242524252425242500000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-3435343534353435343534353435343500000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-2425242524252425242524252425242500010001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-3435343534353435343534353435343510111011000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-2425242524252021242524252425242500000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-3435343534353031343534353435343500000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+0001000124252223242524250c0d242544452425242522232425626324254647242500000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+1011101134353233343534351c1d343554553435343532333435727334355657343500000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+2425242524252425242524252425242524252425242524252425242524252425242500000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+3435343534353435343534353435343534353435343534353435343534353435343500000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+2425242524252e2f242524250809242524252425242524252425242524252425242500000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+3435343534353e3f343534351819343534353435343534353435343534353435343500000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+242524252425242524252425242524254647242524250e0f2425242524254445242500000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+343534353435343534353435343534355657343534351e1f3435343534355455343500000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+2425242524252425242524252425242524252425242524252425242524252425242500000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+3435343534353435343534353435343534353435343534353435343534353435343500000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+2425242524252021242524252425242524252425242520212425242524252425242500000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+3435343534353031343534353435343534353435343530313435343534353435343500000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
