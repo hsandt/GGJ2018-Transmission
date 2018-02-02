@@ -36,5 +36,8 @@ def find_permutations(words, permutation_table):
 
 if __name__ == '__main__':
     english_words = load_words()
-    permutable_words = find_permutations(english_words, (1, 0, 3, 2))
+    # permutable_words = find_permutations(english_words, (1, 0, 3, 2))
+    # permutable_words = find_permutations(english_words, (0, 2, 1))
+    # permutable_words = find_permutations(english_words, (2, 1, 0))
+    permutable_words = find_permutations(english_words, (0, 3, 1, 2))
     print(permutable_words)
