@@ -9,8 +9,10 @@ It was made in an unofficial location and is therefore not available on the GGJ 
 It can currently only be played with the mouse thanks to PICO-8's devkit, and does not
 support fullscreen (as app or in browser)
 
+Thanks to dwyl for the [english-words](https://github.com/dwyl/english-words) I used as an offline resource to find permutable words.
+
 * Title: Reordered
-* Version: 0.1
+* Version: 0.2
 * GitHub page: https://github.com/hsandt/GGJ2018-Transmission
 * Copyright: Long Nguyen Huu
 * See LICENSE for license details
