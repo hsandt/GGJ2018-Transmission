@@ -12,7 +12,7 @@ support fullscreen (as app or in browser)
 Thanks to dwyl for the [english-words](https://github.com/dwyl/english-words) I used as an offline resource to find permutable words.
 
 * Title: Reordered
-* Version: 0.2
+* Version: 0.3
 * GitHub page: https://github.com/hsandt/GGJ2018-Transmission
 * Copyright: Long Nguyen Huu
 * See LICENSE for license details

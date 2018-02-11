@@ -3,7 +3,7 @@ version 15
 __lua__
 
 -- title: reordered
--- version: 0.2
+-- version: 0.3
 -- github page: https://github.com/hsandt/ggj2018-transmission
 -- copyright: long nguyen huu
 -- see license for license details
@@ -854,7 +854,7 @@ function finish_game_async()
  bottom_message = finish_message
  music(-1)
  sfx(sfx_ids.finish)
- yield_delay(1.0)
+ yield_delay(2.5)  -- wait more to let finish jingle end
  load_level(1)
 end
 
@@ -1584,4 +1584,3 @@ __music__
 02 40424344
 03 12584344
 03 14544344
-
