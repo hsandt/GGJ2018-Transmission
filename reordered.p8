@@ -677,9 +677,17 @@ end
 
 function handle_input()
  if current_gamestate == "playing" then
-  -- emission
+  -- start emission
   if not has_started_emission and btnp(❎) then
    start_emit_letters()
+  end
+
+  -- switch to previous/next level
+  if btnp(⬅️) then
+   load_previous_level_cycle()
+  end
+  if btnp(➡️) then
+   load_next_level_cycle()
   end
 
   -- toggle
@@ -749,6 +757,21 @@ end
 function load_level(level_index)
  current_level = level_index
  setup_current_level()
+end
+
+function load_previous_level_cycle()
+ load_level(get_level_index_cycle(current_level-1))
+end
+
+function load_next_level_cycle()
+ load_level(get_level_index_cycle(current_level+1))
+end
+
+function get_level_index_cycle(level_index)
+ -- modulo op must be applied to index starting at 0, we use that as intermediary value
+ local level_index0 = level_index - 1
+ local level_index0_cycle = level_index0 % #levels_data
+ return level_index0_cycle + 1
 end
 
 function fail_current_level(fail_cause)
@@ -1424,6 +1447,13 @@ function run_unit_tests()
  assert(x.x==-1 and x.y==1)
  x = reflect(w,v)
  assert(x.x==-1 and x.y==0)
+
+ -- level index
+ assert(get_level_index_cycle(0) == #levels_data)  -- level 1 to previous level cycles to last
+ assert(get_level_index_cycle(1) == 1)
+ assert(get_level_index_cycle(#levels_data-1) == #levels_data-1)
+ assert(get_level_index_cycle(#levels_data) == #levels_data)
+ assert(get_level_index_cycle(#levels_data+1) == 1)  -- last level to next level cycles to first
 end
 
 __gfx__
@@ -1517,6 +1547,7 @@ __sfx__
 001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 00020000251301c130181301513014130161302013000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+0102000018234242302b2302e230312303223032230322303223032230322301d0001d00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 __music__
 04 40404344
 02 40424344
