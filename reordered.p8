@@ -42,7 +42,8 @@ toggable_forwarder_up_big_id = forwarder_up_big_id+toggable_offset
 toggable_mirror_horizontal_big_id = mirror_horizontal_big_id+toggable_offset
 
 -- constants
-fixed_delta_time = 1/30
+fixed_fps = 30
+fixed_delta_time = 1/fixed_fps
 
 -- ui parameters
 topbar_height = 16
@@ -189,6 +190,11 @@ sfx_ids = {
  toggle = 16
 }
 
+music_ids = {
+ level_preparation = 2,  -- uses sfx 18
+ level_emission = 3  -- uses sfx 18, 20
+}
+
 -- data
 
 levels_data = {
@@ -256,8 +262,11 @@ current_level = 0
 -- reference to the current level data in levels data
 current_level_data = nil
 
--- game state (start, playing, failed, succeeded)
+-- game state (start, menu, ingame)
 current_gamestate = "start"
+
+-- sub state (while playing: preparation, emission, success, failure)
+current_substate = nil
 
 -- is the game in a transition? (between levels or menus)
 is_in_transition = false
@@ -270,9 +279,6 @@ received_letters = {}
 
 -- letters already emitted but not yet received
 moving_letters = {}
-
--- has the player started emitting letters since the last setup/reset?
-has_started_emission = false
 
 -- map of all dynamic tiles, by linear index (unwrapping big tile coordinates in 1d)
 toggable_actors_linear_map = {}
@@ -293,7 +299,7 @@ end
 -- yield as many times as needed so that, assuming you coresume the calling
 -- coroutine each frame at 30 fps, the coroutine resumes after [time] seconds
 function yield_delay(time)
- local nb_frames = 30*time
+ local nb_frames = fixed_fps*time
  for frame=1,nb_frames do  -- still works if nb_frames is not integer (~flr(nb_frames))
   yield()
  end
@@ -638,7 +644,7 @@ function _update()
  process_input()
  handle_input()
 
- if current_gamestate == "playing" then
+ if current_gamestate == "ingame" and current_substate == "emission" then
   update_moving_letters()
  end
 
@@ -646,7 +652,7 @@ function _update()
 end
 
 function _draw()
- if current_gamestate != "start" then
+ if current_gamestate == "ingame" then
   draw_gamespace()
   draw_topbar()
   draw_bottombar()
@@ -676,10 +682,12 @@ function process_input()
 end
 
 function handle_input()
- if current_gamestate == "playing" then
-  -- start emission
-  if not has_started_emission and btnp(❎) then
-   start_emit_letters()
+ if current_gamestate == "ingame" then
+  if current_substate == "preparation" then
+   -- start emission
+   if btnp(❎) then
+    start_emit_letters()
+   end
   end
 
   -- switch to previous/next level
@@ -690,20 +698,21 @@ function handle_input()
    load_next_level_cycle()
   end
 
-  -- toggle
+  -- mouse click
   if is_pressed("mouse_primary") then
    local click_position = get_mouse_screen_position()
    if click_position.y < topbar_height then
-    -- click on topbar
+    -- restart?
     if click_position.x >= restart_icon_x and click_position.x < restart_icon_x+16 then
      reload_current_level_immediate()
     elseif click_position.x >= exit_icon_x then
      printh("exit (not implemented)")
     end
    elseif click_position.y >= topbar_height+16*level_height then
-    -- click on bottombar
+    -- bottombar
      printh("click on bottombar (does nothing)")
    else
+    -- toggle?
     local location = screen_position_to_gamespace_location(click_position)
     local toggable_actor = get_toggable_actor_at_location(location)
     if toggable_actor then
@@ -730,7 +739,8 @@ function setup_current_level()
  end
 
  -- setup game state
- current_gamestate = "playing"
+ current_gamestate = "ingame"
+ current_substate = "preparation"
 
  -- stop locking transitions
  is_in_transition = false
@@ -748,10 +758,12 @@ function setup_current_level()
  -- stop and clear the emit coroutine if needed (coroutines must be resumed to continue;
  -- if they aren't and references to them disappear, they will be gc-ed, effectively being stopped)
  clear_table(coroutines)
- has_started_emission = false
 
  -- ui
  bottom_message = current_level_data.bottom_message
+
+ -- music
+ music(music_ids.level_preparation)
 end
 
 function load_level(level_index)
@@ -775,7 +787,7 @@ function get_level_index_cycle(level_index)
 end
 
 function fail_current_level(fail_cause)
- current_gamestate = "failed"
+ current_substate = "failure"
 
  if fail_cause == fail_causes.wrong_letter_sequence then
   bottom_message = fail_message_wrong_letter_sequence
@@ -794,7 +806,7 @@ function fail_current_level(fail_cause)
 end
 
 function succeed_current_level()
- current_gamestate = "succeeded"
+ current_substate = "success"
  bottom_message = success_message
  if not is_in_transition then
   is_in_transition = true
@@ -809,12 +821,14 @@ end
 
 function confirm_fail_async()
  yield_delay(1.0)
+ music(-1)
  sfx(sfx_ids.failure)
  add_coroutine(reload_current_level_async)
 end
 
 function confirm_success_async()
  yield_delay(1.0)
+ music(-1)
  sfx(sfx_ids.success)
  add_coroutine(load_next_level_async)
 end
@@ -888,14 +902,19 @@ end
 
 -- start and register coroutine to emit letters at regular intervals from now on
 function start_emit_letters()
- local emit_coroutine = cocreate(function()
-   while #remaining_letters_to_emit > 0 do
-    emit_next_letter()
-    yield_delay(1.0)
-   end
-  end)
- has_started_emission = true
- add(coroutines, emit_coroutine)
+ add_coroutine(emit_letters_async)
+ current_substate = "emission"
+ music(3)
+end
+
+function emit_letters_async()
+ while true do
+  emit_next_letter()
+  if #remaining_letters_to_emit == 0 then
+   return
+  end
+  yield_delay(1.0)
+ end
 end
 
 -- emit the next letter from the emitter
@@ -1015,7 +1034,7 @@ end
 function receive(moving_letter)
  add(received_letters, moving_letter.letter)
  del(moving_letters, moving_letter)
- sfx(sfx_ids.receive_letter)
+ sfx(sfx_ids.receive_letter, 1)
 
  check_success_and_failure()
 end
@@ -1547,7 +1566,21 @@ __sfx__
 001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 00020000251301c130181301513014130161302013000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-0102000018234242302b2302e230312303223032230322303223032230322301d0001d00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+0002000019224242202b2202e220312203222032220322203222032220322201d0001d00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+010b00002455021550005000050000500005000050000500005000050000500005000050000500005000050000500005000050000500005000050000500005000050000500005000050000500005000050000500
+001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+012000000e5250e525115250e505115050e525115250050500505005050050500505005050050500505005051f0251f02522025220001f0001f02522025005050050500505005050050000500000000000000000
+011000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+011300001d7441d7441a7351d7001d7441d7441a7351d7001a7441a74417735177001a7441a74417735087001d7441d7441a7351d7001d7441d7441a7351d7002474424744217351770024744247442173508700
+011000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 __music__
-04 40404344
+00 41404344
 02 40424344
+03 12584344
+03 14544344
