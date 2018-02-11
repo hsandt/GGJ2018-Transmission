@@ -123,6 +123,7 @@ end
 
 
 -- enums
+
 directions = {
  up = 1,
  down = 2,
@@ -175,6 +176,17 @@ fail_causes = {
  wrong_letter_sequence = 1,
  too_short = 2,
  too_long = 3
+}
+
+-- sound enums
+sfx_ids = {
+ emit_letter = 0,
+ receive_letter = 1,
+ success = 2,
+ failure = 3,
+ move = 8,
+ mirror = 9,
+ toggle = 16
 }
 
 -- data
@@ -754,7 +766,7 @@ function fail_current_level(fail_cause)
 
  if not is_in_transition then
   is_in_transition = true
-  add_coroutine(reload_current_level_async)
+  add_coroutine(confirm_fail_async)
  end
 end
 
@@ -767,9 +779,21 @@ function succeed_current_level()
    -- last level succeeded!
    add_coroutine(finish_game_async)
   else
-   add_coroutine(load_next_level_async)
+   add_coroutine(confirm_success_async)
   end
  end
+end
+
+function confirm_fail_async()
+ yield_delay(1.0)
+ sfx(sfx_ids.failure)
+ add_coroutine(reload_current_level_async)
+end
+
+function confirm_success_async()
+ yield_delay(1.0)
+ sfx(sfx_ids.success)
+ add_coroutine(load_next_level_async)
 end
 
 function reload_current_level_immediate()
@@ -780,20 +804,20 @@ function reload_current_level_immediate()
 end
 
 function reload_current_level_async()
- yield_delay(2.0)
+ yield_delay(1.0)
  setup_current_level()
 end
 
 function load_next_level_async()
  assert(current_level < #levels_data)
- yield_delay(2.0)
+ yield_delay(1.0)
  load_level(current_level + 1)
 end
 
 function finish_game_async()
- yield_delay(2.0)
+ yield_delay(1.0)
  bottom_message = finish_message
- yield_delay(2.0)
+ yield_delay(1.0)
  load_level(1)
 end
 
@@ -864,6 +888,9 @@ function emit_next_letter()
  del(remaining_letters_to_emit,next_letter)
  -- add letter to sequence of moving letters
  add(moving_letters, moving_letter)
+
+ -- sfx
+ sfx(sfx_ids.emit_letter)
 end
 
 -- update emit coroutine if active, remove if dead
@@ -884,6 +911,7 @@ end
 function toggle(toggable_actor)
  printh("toggle actor: "..toggable_actor.effector_type)
  toggable_actor.active = not toggable_actor.active
+ sfx(sfx_ids.toggle)
 end
 
 
@@ -964,6 +992,8 @@ end
 function receive(moving_letter)
  add(received_letters, moving_letter.letter)
  del(moving_letters, moving_letter)
+ sfx(sfx_ids.receive_letter)
+
  check_success_and_failure()
 end
 
@@ -1051,33 +1081,22 @@ end
 
 -- mirror the velocity of the moving letter orthogonally to a direction, preserves speed
 function apply_mirror(moving_letter, direction, location)
- printh("-- apply_mirror --")
  -- first check if the letter is moving toward the mirror (normal amy be on one side or another! you need to compare last pos and velocity side)
  local normal = mirror_directions_normal[direction]  -- normal doesn't need to be unit, reflect will normalize
- printh("location: "..location_to_string(location))
- printh("direction: "..direction)
- printh("normal: "..vector_to_string(normal))
-
  local mirror_center = vector_add(location_to_position(location), v8)
  local previous_relative_position = vector_sub(moving_letter.last_position,mirror_center)
  local new_relative_position = vector_sub(moving_letter.position,mirror_center)
 
  local last_position_side_dot = dot(previous_relative_position,normal)  -- normal is not unit, but we just use the sign
  local new_position_side_dot = dot(new_relative_position,normal)  -- normal is not unit, but we just use the sign
- local velocity_dot = dot(moving_letter.velocity,normal)  -- normal is not unit, but we just use the sign
- printh("velocity_dot: "..velocity_dot)
- printh("last_position_side_dot: "..last_position_side_dot)
- -- directly check if segment from previous to new position intersects with mirror
- -- if velocity_dot < 0 and last_position_side_dot >= 0 or velocity_dot >= 0 and last_position_side_dot < 0 then
- if new_position_side_dot < 0 and last_position_side_dot >= 0 or new_position_side_dot >= 0 and last_position_side_dot < 0 then
 
+ -- directly check if segment from previous to new position intersects with mirror
+ if new_position_side_dot < 0 and last_position_side_dot >= 0 or new_position_side_dot >= 0 and last_position_side_dot < 0 then
   -- then check if the motion is enough to reach the mirror (a thin segment)
   -- use continuous collision detection with catch-up of remaining motion as reflected
   -- to avoid "zigzag reflections"
   -- use the registered last position instead of position - velocity * dt, as the second
   -- formula would give a wrong last position behind the mirror just after being reflected
-
-  local center_to_intersection = project_ortho(previous_relative_position,normal)
 
   -- ci = p_ortho_n(cm), c: mirror center, i: intersection, m: previous position
   -- local intersection_position = vector_add(mirror_center, center_to_intersection)  -- wrong!!
@@ -1099,40 +1118,28 @@ function apply_mirror(moving_letter, direction, location)
   -- in this case, the mirror goes through (0,0) so b = 0, and use relation_position
   -- find a symmetrical formula, or you'll need an if here
   -- or just reverse x and y, or rotate the vectors or something for easier calculation
+
   local relative_intersection_position
 
   if normal.y != 0 and moving_letter.velocity.x != 0 then
-   printh("mirror and velocity not vertical")
    local u = rotatecw90(normal)  -- not unit, but ok
-   printh("u: "..vector_to_string(u))
    local a = u.y/u.x
    local c = moving_letter.velocity.y/moving_letter.velocity.x
-   printh("c: "..c)
    local d = previous_relative_position.y-c*previous_relative_position.x
    local relative_intersection_position_x = d/(a-c)
    relative_intersection_position = make_vector(relative_intersection_position_x,a*relative_intersection_position_x)
   elseif normal.y == 0 and moving_letter.velocity.x != 0 then
-   printh("mirror is vertical")
+   -- mirror is vertical
    -- express x=f(y)
    -- local u = rotatecw90(normal)  -- not unit, but ok
    -- local a = u.x/u.y  -- but u.x == 0
    -- local a = 0
    -- mirror x0 = x = 0 (mirror always goes through center)
    -- y = c*0+d = d
-   local c = moving_letter.velocity.y/moving_letter.velocity.x
    local d = previous_relative_position.y-c*previous_relative_position.x
    local relative_intersection_position_y = d
-   -- normally both forumla give the same...
-   -- those reverse x and y
-   local c2 = moving_letter.velocity.x/moving_letter.velocity.y
-   local d2 = previous_relative_position.x-c*previous_relative_position.y
-   -- local relative_intersection_position_y = d/(a-c)
-   local relative_intersection_position_y2 = d2/(-c2)
-   assert(relative_intersection_position_y == relative_intersection_position_y2)
-   -- relative_intersection_position = make_vector(a*relative_intersection_position_x,relative_intersection_position_y)
    relative_intersection_position = make_vector(0,relative_intersection_position_y)
   elseif normal.y != 0 then
-   printh("velocity is vertical")
    -- velocity is vertical, but mirror is not vertical
    -- x = x0 (of moving letter)
    -- y = a*x+b = a*x0
@@ -1146,34 +1153,23 @@ function apply_mirror(moving_letter, direction, location)
    assert(false, "both mirror and velocity are vertical, which is impossible since the velocity went through the mirror")
   end
 
-  printh("relative_intersection_position: "..vector_to_string(relative_intersection_position))
-
   -- computed the "signed remaining distance", the abscissa of the
   -- local motion_abscissa = vector_mult(fixed_delta_time, moving_letter.velocity)
   local motion_before_intersection = vector_sub(relative_intersection_position,previous_relative_position)
-  printh("moving_letter.velocity: "..vector_to_string(moving_letter.velocity))
-  printh("motion_before_intersection: "..vector_to_string(motion_before_intersection))
   assert(dot(motion_before_intersection,moving_letter.velocity) > 0)  -- first check made sure we go toward mirror
-  printh("dot(motion_before_intersection,moving_letter.velocity): "..dot(motion_before_intersection,moving_letter.velocity))
   assert(mixed_prod(motion_before_intersection,moving_letter.velocity) == 0, mixed_prod(motion_before_intersection,moving_letter.velocity))  -- and both vectors should be aligned
-  printh("passed mixed_prod assert")
   local signed_remaining_distance = vector_length(moving_letter.velocity)*fixed_delta_time - vector_length(motion_before_intersection)
-  printh("signed_remaining_distance: "..signed_remaining_distance)
   assert(signed_remaining_distance >= 0)
 
-  if signed_remaining_distance >= 0 then
-   -- mirror now
-   -- caution: a wave reflection bounces on the tangent, so we need the opposite of the reflected vector!
-   local mirrored_velocity = vector_oppose(reflect(moving_letter.velocity,normal))
-   printh("mirrored_velocity: "..vector_to_string(mirrored_velocity))
-   moving_letter.velocity = mirrored_velocity
-   local remaining_motion = vector_mult(signed_remaining_distance,normalized(mirrored_velocity))
-   printh("remaining_motion: "..vector_to_string(remaining_motion))
-   local intersection_position = vector_add(mirror_center,relative_intersection_position)
-   printh("intersection_position: "..vector_to_string(intersection_position))
-   moving_letter.position = vector_add(intersection_position,remaining_motion)
-   printh("new moving_letter.position: "..vector_to_string(moving_letter.position))
-  end
+  -- mirror now
+  -- caution: a wave reflection bounces on the tangent, so we need the opposite of the reflected vector!
+  local mirrored_velocity = vector_oppose(reflect(moving_letter.velocity,normal))
+  moving_letter.velocity = mirrored_velocity
+  local remaining_motion = vector_mult(signed_remaining_distance,normalized(mirrored_velocity))
+  local intersection_position = vector_add(mirror_center,relative_intersection_position)
+  moving_letter.position = vector_add(intersection_position,remaining_motion)
+
+  sfx(sfx_ids.mirror)
  end
 end
 
@@ -1505,3 +1501,11 @@ __map__
 3435343534353435343534353435343556573435343534353c3d343534353435343534353435343534353435343534350000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 2425242524252021242524252425242524252425242524252021242524252425242524252425242520212425242524250000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 3435343534353031343534353435343534353435343534353031343534353435343534353435343530313435343534350000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+__sfx__
+00010000190501f050210502205023050230502405000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+0102000003350043500b3500f350133501a35020350243502a3502e3502e350003000030000300003000030000300003000030000300003000030000300003000030000300003000030000300003000030000300
+011100002335500305233552135523350233550030500305003050030500305003050030500305003050030500305003050030500305003050030500305003050030500305003050030500305003050000500005
+011400001205011050100501005000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+__music__
+04 40404344
+02 40424344
